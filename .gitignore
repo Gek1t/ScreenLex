@@ -1,0 +1,69 @@
+# Python / Build / Virtualenvs
+__pycache__/
+*.py[cod]
+*.pyo
+.build_venv/
+.venv/
+venv/
+build/
+dist/
+ScreenLex/
+*.spec.bak
+
+# Personal Databases, Logs & Runtime State
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.log
+!desktop/offline_dict.db
+logs/
+
+# Local Agent / Scratch / Backups / Archives
+.gemini/
+.opencode_dump/
+backup_v*/
+blackhole/
+scratch/
+ScreenLex_v*.zip
+*.tar.gz
+*.7z
+
+# Temporary Screenshots & Local Prompt Dumps
+*.png
+!docs/screenshots/v24_*.png
+docs/screenshots/0*.png
+dump_*.py
+read_opencode_chat.py
+summarize_user_prompts.py
+view_recent_messages.py
+benchmark_startup.py
+user_prompts.txt
+last_assistant_msg.txt
+launch.bat
+main.py
+run_app.py
+启动ScreenLex*.bat
+
+# Legacy Early Vite Prototype (kept local, excluded from open-source repo)
+app/
+src/
+node_modules/
+index.html
+package.json
+package-lock.json
+postcss.config.js
+tailwind.config.js
+tsconfig.json
+tsconfig.node.json
+vite.config.ts
+PROJECT_OUTLINE.md
+PROJECT_SPEC.md
+TECH_STACK.md
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
