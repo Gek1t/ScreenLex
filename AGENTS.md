@@ -362,6 +362,12 @@
    - **严禁个人数据与运行产物入库**：依托 `.gitignore` 严格隔离个人生词库与配置（`*.db`，仅白名单放行只读词库 `desktop/offline_dict.db`）、运行日志（`*.log`、`logs/`）、临时测试/草稿目录（`scratch/`、`.gemini/`）、本地备份（`backup_v*/`）及打包产物（`dist/`、`build/`、`ScreenLex_v*.zip`）；提交前必须确认 `git status --short` 仅含预期开源文件。
    - **截图与 Release 附件脱敏**：所有纳入 `docs/screenshots/` 的截图必须在隔离临时库/无隐私样本下渲染并检查 PNG 元数据不含本机路径或账号信息；发布新 Release 压缩包前须终止旧进程、以 `pyinstaller ScreenLex.spec --noconfirm` 重新打包并对包内文件执行字节级隐私扫描，确认零残留后再打注释标签并发布。
    - **推送前强制扫描闭环**：每次 `git push` 前必须对暂存区与全仓库追踪文件执行敏感信息（个人标识、非 noreply 邮箱格式、本机绝对路径、凭据关键字）正则审计，确认 **0 泄露命中** 且提交作者为匿名身份后方可推送至 `origin/main`。
+4. **打包与 GitHub Release 上传标准流**：
+   - **环境与进程隔离**：打包前必须先终止运行中的 `ScreenLex.exe`（防止 `numpy` 等 C 动态库文件锁）；必须使用项目隔离构建环境 `.build_venv\Scripts\pyinstaller.exe ScreenLex.spec --noconfirm` 重新生成 `dist\ScreenLex\`，严禁使用全局污染环境打包。
+   - **产物净度核验**：确认个人生词库仍隔离于 `%APPDATA%\ScreenLex\screenlex.db`，且 `dist\ScreenLex\_internal\desktop\` 中仅含 `common_words.txt` 与 `offline_dict.db`（严禁混入任何 `screenlex.db`、`.log` 或临时文件）。
+   - **归档结构与防入库**：将 `dist\ScreenLex\` 目录内容打包为 `ScreenLex_v<X.Y.Z>_Windows_x64.zip`（归档根目录直接包含 `ScreenLex.exe` 与 `_internal/`，由 `.gitignore` 屏蔽，严禁提交进 Git 仓库）。
+   - **包体字节级脱敏审计**：对 `.zip` 归档内全部条目执行字节级隐私扫描（确认 `0` 个人信息与开发期残留）并计算 SHA-256 校验码。
+   - **文档联动、打标与 API 发布**：同步更新 `README.md` 的 Release 徽章与压缩包下载名、`CHANGELOG.md` 与 `AGENTS.md`，执行全库隐私扫描与局部 Git 身份核验，提交推送 `main` 后以匿名身份打注释标签 `git tag -a v<X.Y.Z>` 并推送标签；仅在内存中通过本机 Git Credential Manager（`git credential fill`）读取凭据调用 GitHub Releases API（严禁将 Token 打印到终端、日志或写入文件），创建 `v<X.Y.Z>` Release 并流式上传 `.zip` 附件，最后通过 API 核验远端 `state == "uploaded"` 且附件字节数与本地压缩包完全一致。
 
 
 

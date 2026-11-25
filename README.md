@@ -5,7 +5,7 @@
 ![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011%20x64-1C1C1C?style=flat-square)
 ![Python](https://img.shields.io/badge/Python-3.12%2B%20%7C%20PySide6-3776AB?style=flat-square)
 ![Offline Dict](https://img.shields.io/badge/Offline%20Lexicon-52%2C513%20Words-816D70?style=flat-square)
-![Release](https://img.shields.io/badge/Release-v2.4.1-10B981?style=flat-square)
+![Release](https://img.shields.io/badge/Release-v2.4.2-10B981?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)
 
 ---
@@ -54,7 +54,7 @@
 ## 快速开始
 
 ### 方式一：下载绿色便携版（推荐）
-1. 前往 **[Releases](https://github.com/Gek1t/ScreenLex/releases/latest)** 下载最新的 `ScreenLex_v2.4.1_Windows_x64.zip`；
+1. 前往 **[Releases](https://github.com/Gek1t/ScreenLex/releases/latest)** 下载最新的 `ScreenLex_v2.4.2_Windows_x64.zip`；
 2. 解压到本地目录后，进入 `ScreenLex/` 文件夹直接双击运行 `ScreenLex.exe`；
 3. 屏幕边缘出现停靠微柄、系统托盘出现图标即表示已就绪（右键微柄或托盘可打开**设置**、**生词本**、**实时双语字幕**）。
 
