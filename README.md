@@ -30,7 +30,7 @@
 - **三源自动协同切换**：
   - **YouTube / Bilibili 免开 CC 外挂全片预译同步**：内置无窗 Windows UIA 浏览器探针锁相校准与 WBI / 应用内二维码扫码登录，自动抓取英文字幕轨并后台分批预译（支持 `[-2s]` / `[+2s]` 微调）；
   - **全自动屏幕字幕捕获与框选 OCR**：针对无外挂字幕的本地课程录像或 PPT 嵌视频，支持框选任意字幕区域锁定 OCR 识别，并自动缝合滚动碎词与语义断句。
-- **原位透视悬浮字幕舱（HUD）**：利用 Windows `WDA_EXCLUDEFROMCAPTURE` 对截屏工具隐形，直接原位覆盖原视频单语字幕且不触发 OCR 自我循环；支持日夜双色、字号/字重调节与背景反相字色。
+- **原位透视悬浮字幕舱（HUD）**：利用 Windows `WDA_EXCLUDEFROMCAPTURE` 对截屏工具隐形，直接原位覆盖原视频单语字幕且不触发 OCR 自我循环；支持日夜双色、字号/字重调节，以及基于文字区 RGB 分位数与对比度联判的自适应字色反相与按需锐利描边（纯黑白场景保持零描边质感，深蓝衣物及混合讲课背景同样清晰可读）。
 - **一键导出双语学习笔记**：在独立字幕台中支持每帧 40 行分批零卡顿挂载，并将整节课程一键导出为带时间轴的 **Markdown（`.md`）** 或 **TXT（`.txt`）** 双语讲稿。
 
 ### 4. Editorial 2.0 杂志美学 · 生词本与系统工程
@@ -100,8 +100,8 @@ pyinstaller ScreenLex.spec --noconfirm
 ├── run_desktop.py               # 桌面端主入口（单实例互斥、ONNX/WinRT 初始化时序、异常日志）
 ├── ScreenLex.spec               # PyInstaller 发行打包配置
 ├── requirements.txt             # Windows 运行时依赖清单
-├── CHANGELOG.md                 # 全版本更新日志（当前最新 v2.4.1）
-├── AGENTS.md                    # 架构约束与 Windows/Qt 踩坑规范（§§1-23）
+├── CHANGELOG.md                 # 全版本更新日志（当前最新 v2.4.2）
+├── AGENTS.md                    # 架构约束与 Windows/Qt 踩坑规范（§§1-25）
 ├── docs/screenshots/            # 界面截图资产
 └── desktop/
     ├── app.py                   # 全局协调器、托盘、热键调度、开机自启与窗口生命周期

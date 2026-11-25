@@ -1,5 +1,16 @@
 # ScreenLex 更新日志 (Changelog)
 
+## v2.4.2 (2026-11-25)
+
+> **透明字幕彩色/混合背景自适应对比度优化**：解决深蓝衣物、中灰/彩色背景以及“亮底+深衣”混合讲课画面下透明字幕误切深字、边缘发糊不易辨识的问题，同时 100% 保持原有纯黑/纯白高对比场景的零描边干净质感。
+
+- **文字区精准 RGB 采样（[`desktop/subtitle_window.py`](desktop/subtitle_window.py)）**：
+  - 新增 `_compute_text_sample_local_rect`、`_sample_underlying_bg_rgb` 与 `sample_screen_region_rgb`（保留 `sample_screen_region_luma` 向下兼容），采样矩形紧贴当前实际渲染的英文字幕词块与中文字幕行共同覆盖区域，不再在宽幅模式下混入两侧大面积空白背景，并完整覆盖下方中文字幕行。
+- **Rec.709 感知亮度分位数 + 色度 + WCAG 对比度联判（`analyze_backdrop_contrast`）**：
+  - 结合透明合成后有效 RGB 的 `p20` / `p50` 感知亮度分位数、暗像素占比（`L < 100`）与色度 `C` 及滞回防闪烁判定，当文字区存在深色衣物/局部暗斑或中等亮度高饱和色彩背景时自动锁定浅色字体；纯黑/深蓝暗底与纯白/浅灰/浅粉蓝亮底（`cr_worst >= 5.5`）严格维持 `halo_strength = 0.0` 零描边输出。
+- **混杂与中灰场景锐利自适应描边（`_draw_halo_text` / `InteractiveSubtitleText` / `_ShadowLabel`）**：
+  - 仅当最劣局部对比度低于阈值时按 `halo_strength` 平滑叠加 8 向微描边与轻微投影，同步修复 `hud_cn_label` 像素字号（`setPixelSize`）与色值一致性，并将低透明浅色背景下的中文墨色微调为 `#23262D`。
+
 ## v2.4.1 (2026-11-24)
 
 > **网络代理竞速、独立离线状态条与开机置顶稳定性修复**：彻底解决有网代理环境下误报离线、离线提示侵占译文区以及开机自启浮窗易被压底的问题，确保真·离线与联网查词体验干净稳定。

@@ -192,9 +192,9 @@ _gdi32.CreateDIBSection.argtypes = [
 _gdi32.CreateDIBSection.restype = wintypes.HBITMAP
 
 
-def sample_screen_region_luma(x: int, y: int, w: int, h: int) -> Optional[float]:
+def sample_screen_region_rgb(x: int, y: int, w: int, h: int) -> Optional[Any]:
     """
-    高速采样屏幕区域感知亮度 (0..255)。
+    高速采样屏幕区域 RGB 像素样本（Nx3, 0..255）。
     配合 WDA_EXCLUDEFROMCAPTURE 窗体可 0ms 透视采样字幕背后的真实背景色（不采样字幕本身）。
     """
     if w <= 4 or h <= 2:
@@ -224,29 +224,25 @@ def sample_screen_region_luma(x: int, y: int, w: int, h: int) -> Optional[float]
         old_obj = _gdi32.SelectObject(hdc_mem, hbmp)
         if not _gdi32.BitBlt(hdc_mem, 0, 0, int(w), int(h), hdc_scr, int(x), int(y), 0x00CC0020):
             return None
+        step_x = max(1, int(w) // 24)
+        step_y = max(1, int(h) // 8)
         if _np is not None:
-            step_x = max(1, int(w) // 8)
-            step_y = max(1, int(h) // 3)
-            arr = _np.frombuffer(bits_ptr.value and (ctypes.c_ubyte * (int(w) * int(h) * 4)).from_address(bits_ptr.value), dtype=_np.uint8).reshape(int(h), int(w), 4)
-            sub = arr[::step_y, ::step_x, :]
-            luma_arr = 0.299 * sub[:, :, 2] + 0.587 * sub[:, :, 1] + 0.114 * sub[:, :, 0]
-            if luma_arr.size == 0:
+            arr = _np.frombuffer(
+                (ctypes.c_ubyte * (int(w) * int(h) * 4)).from_address(bits_ptr.value),
+                dtype=_np.uint8,
+            ).reshape(int(h), int(w), 4)
+            sub = arr[::step_y, ::step_x, :3][:, :, ::-1]
+            if sub.size == 0:
                 return None
-            return float(_np.median(luma_arr))
+            return _np.ascontiguousarray(sub.reshape(-1, 3), dtype=_np.float32)
         buf = (ctypes.c_ubyte * (int(w) * int(h) * 4)).from_address(bits_ptr.value)
-        lumas: List[float] = []
-        step_x = max(1, int(w) // 8)
-        step_y = max(1, int(h) // 3)
+        samples: List[Tuple[int, int, int]] = []
         for iy in range(0, int(h), step_y):
             row_off = iy * int(w) * 4
             for ix in range(0, int(w), step_x):
                 off = row_off + ix * 4
-                b, g, r = buf[off], buf[off + 1], buf[off + 2]
-                lumas.append(0.299 * r + 0.587 * g + 0.114 * b)
-        if not lumas:
-            return None
-        lumas.sort()
-        return float(lumas[len(lumas) // 2])
+                samples.append((int(buf[off + 2]), int(buf[off + 1]), int(buf[off])))
+        return samples or None
     except Exception:
         return None
     finally:
@@ -258,6 +254,131 @@ def sample_screen_region_luma(x: int, y: int, w: int, h: int) -> Optional[float]
             _gdi32.DeleteDC(hdc_mem)
         if hdc_scr:
             _u32.ReleaseDC(None, hdc_scr)
+
+
+def sample_screen_region_luma(x: int, y: int, w: int, h: int) -> Optional[float]:
+    """高速采样屏幕区域中位感知亮度 (0..255)。"""
+    samples = sample_screen_region_rgb(x, y, w, h)
+    if samples is None:
+        return None
+    if _np is not None and hasattr(samples, "shape"):
+        if samples.size == 0:
+            return None
+        luma = 0.299 * samples[:, 0] + 0.587 * samples[:, 1] + 0.114 * samples[:, 2]
+        return float(_np.median(luma))
+    lumas = sorted(0.299 * r + 0.587 * g + 0.114 * b for r, g, b in samples)
+    return float(lumas[len(lumas) // 2]) if lumas else None
+
+
+def _quantile_sorted(sorted_vals: List[float], q: float) -> float:
+    n = len(sorted_vals)
+    if n == 0:
+        return 0.0
+    if n == 1:
+        return float(sorted_vals[0])
+    pos = max(0.0, min(1.0, q)) * (n - 1)
+    lo = int(pos)
+    hi = min(n - 1, lo + 1)
+    frac = pos - lo
+    return float(sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * frac)
+
+
+def analyze_backdrop_contrast(
+    rgb_samples: Any,
+    hud_rgb: Tuple[float, float, float],
+    alpha: float,
+    prev_fg_is_light: Optional[bool] = None,
+    prev_halo_strength: float = 0.0,
+) -> Tuple[bool, float]:
+    """
+    基于透明合成后的有效背景 RGB 样本，计算 Rec.709 感知亮度分位数、WCAG 相对亮度及色度，
+    返回 (fg_is_light, halo_strength)：
+    - 纯黑/纯白高对比背景保持 halo_strength=0.0，延续干净 Editorial 字体质感；
+    - 深蓝衣物、彩色背景或“亮墙+深衣”混合画面自动切为高对比亮字并按最劣局部对比度平滑注入可读性描边。
+    """
+    a = max(0.0, min(1.0, float(alpha)))
+    inv_a = 1.0 - a
+    hr, hg, hb = float(hud_rgb[0]), float(hud_rgb[1]), float(hud_rgb[2])
+
+    if _np is not None and hasattr(rgb_samples, "shape"):
+        arr = _np.asarray(rgb_samples, dtype=_np.float32).reshape(-1, 3)
+        if arr.shape[0] == 0:
+            return (True if prev_fg_is_light is None else bool(prev_fg_is_light), float(prev_halo_strength))
+        eff = _np.clip(
+            arr * inv_a + _np.array([hr * a, hg * a, hb * a], dtype=_np.float32),
+            0.0,
+            255.0,
+        )
+        luma = 0.2126 * eff[:, 0] + 0.7152 * eff[:, 1] + 0.0722 * eff[:, 2]
+        chroma = eff.max(axis=1) - eff.min(axis=1)
+        c_srgb = eff / 255.0
+        c_lin = _np.where(c_srgb <= 0.04045, c_srgb / 12.92, ((c_srgb + 0.055) / 1.055) ** 2.4)
+        rel_y = 0.2126 * c_lin[:, 0] + 0.7152 * c_lin[:, 1] + 0.0722 * c_lin[:, 2]
+        p15, p20, p50, p85 = [float(v) for v in _np.percentile(luma, [15, 20, 50, 85])]
+        y15, y85 = [float(v) for v in _np.percentile(rel_y, [15, 85])]
+        c50 = float(_np.median(chroma))
+        deep_dark_ratio = float(_np.mean(luma < 100.0))
+    else:
+        pts = list(rgb_samples or [])
+        if not pts:
+            return (True if prev_fg_is_light is None else bool(prev_fg_is_light), float(prev_halo_strength))
+        lumas: List[float] = []
+        rel_ys: List[float] = []
+        chromas: List[float] = []
+        deep_cnt = 0
+        for r, g, b in pts:
+            er = max(0.0, min(255.0, hr * a + float(r) * inv_a))
+            eg = max(0.0, min(255.0, hg * a + float(g) * inv_a))
+            eb = max(0.0, min(255.0, hb * a + float(b) * inv_a))
+            lv = 0.2126 * er + 0.7152 * eg + 0.0722 * eb
+            lumas.append(lv)
+            if lv < 100.0:
+                deep_cnt += 1
+            chromas.append(max(er, eg, eb) - min(er, eg, eb))
+            rl, gl, bl = (
+                (c / 255.0 / 12.92 if (c / 255.0) <= 0.04045 else ((c / 255.0 + 0.055) / 1.055) ** 2.4)
+                for c in (er, eg, eb)
+            )
+            rel_ys.append(0.2126 * rl + 0.7152 * gl + 0.0722 * bl)
+        lumas.sort()
+        rel_ys.sort()
+        chromas.sort()
+        p15 = _quantile_sorted(lumas, 0.15)
+        p20 = _quantile_sorted(lumas, 0.20)
+        p50 = _quantile_sorted(lumas, 0.50)
+        p85 = _quantile_sorted(lumas, 0.85)
+        y15 = _quantile_sorted(rel_ys, 0.15)
+        y85 = _quantile_sorted(rel_ys, 0.85)
+        c50 = _quantile_sorted(chromas, 0.50)
+        deep_dark_ratio = deep_cnt / len(pts)
+
+    if prev_fg_is_light is None:
+        want_dark = (p50 >= 156.0) and (p20 >= 122.0) and (deep_dark_ratio < 0.18) and not (c50 >= 55.0 and p50 < 176.0)
+        fg_is_light = not want_dark
+    elif prev_fg_is_light:
+        can_go_dark = (p50 >= 166.0) and (p20 >= 134.0) and (deep_dark_ratio < 0.14) and not (c50 >= 50.0 and p50 < 184.0)
+        fg_is_light = not can_go_dark
+    else:
+        fg_is_light = (p50 <= 146.0) or (p20 <= 112.0) or (deep_dark_ratio >= 0.22) or (c50 >= 62.0 and p50 <= 166.0)
+
+    if fg_is_light:
+        cr_worst = (0.955 + 0.05) / (y85 + 0.05)
+        raw_halo = 0.0 if cr_worst >= 5.5 else min(1.0, (5.5 - cr_worst) / (5.5 - 1.4)) * 0.88
+    else:
+        cr_worst = (y15 + 0.05) / (0.015 + 0.05)
+        raw_halo = 0.0 if cr_worst >= 5.5 else min(1.0, (5.5 - cr_worst) / (5.5 - 1.6)) * 0.72
+
+    if raw_halo < 0.08:
+        raw_halo = 0.0
+    else:
+        raw_halo = round(raw_halo * 20.0) / 20.0
+
+    prev_s = max(0.0, min(1.0, float(prev_halo_strength)))
+    if prev_fg_is_light is not None and fg_is_light == prev_fg_is_light:
+        if abs(raw_halo - prev_s) < 0.08 and (raw_halo == 0.0) == (prev_s == 0.0):
+            raw_halo = prev_s
+
+    return bool(fg_is_light), float(raw_halo)
 
 
 class _DwmMargins(ctypes.Structure):
@@ -422,6 +543,32 @@ class VideoPlaybackController:
     def reset_state(self):
         self._paused_by_us = False
         self._paused_hwnd = 0
+
+
+def _draw_halo_text(
+    painter: QPainter,
+    rect: QRectF,
+    flags: int,
+    text: str,
+    strength: float,
+    dark_halo: bool,
+):
+    """为混杂或低对比度背景下的透明字幕绘制锐利自适应可读性描边与轻微投影。"""
+    s = max(0.0, min(1.0, float(strength)))
+    if s <= 0.02 or not text:
+        return
+    base = (10, 12, 16) if dark_halo else (250, 249, 246)
+    if dark_halo:
+        painter.setPen(QColor(base[0], base[1], base[2], max(0, min(255, int(round(130 * s))))))
+        painter.drawText(rect.translated(0.0, 1.5), flags, text)
+    cardinal_a = max(0, min(255, int(round(165 * s))))
+    diag_a = max(0, min(255, int(round(115 * s))))
+    painter.setPen(QColor(base[0], base[1], base[2], cardinal_a))
+    for dx, dy in ((-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)):
+        painter.drawText(rect.translated(dx, dy), flags, text)
+    painter.setPen(QColor(base[0], base[1], base[2], diag_a))
+    for dx, dy in ((-0.85, -0.85), (0.85, -0.85), (-0.85, 0.85), (0.85, 0.85)):
+        painter.drawText(rect.translated(dx, dy), flags, text)
 
 
 class InteractiveSubtitleText(QWidget):
@@ -743,20 +890,23 @@ class InteractiveSubtitleText(QWidget):
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         painter.setFont(self._font)
 
+        flags = int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         for idx, item in enumerate(self._word_items):
             r: QRectF = item["rect"]
             is_active = (idx == self._hovered_idx or idx == self._pressed_idx)
+            if self._shadow_strength > 0.02:
+                _draw_halo_text(painter, r, flags, item["raw"], self._shadow_strength, self._dark_halo)
             if is_active:
                 painter.setPen(self._hover_text_color)
-                painter.drawText(r, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, item["raw"])
+                painter.drawText(r, flags, item["raw"])
                 painter.fillRect(QRectF(r.left(), r.bottom() - 1.5, r.width(), 2.0), self._underline_color)
             else:
                 painter.setPen(self._text_color)
-                painter.drawText(r, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, item["raw"])
+                painter.drawText(r, flags, item["raw"])
 
 
 class _ShadowLabel(QLabel):
-    """纯文字排版标签：高透明度/半透明状态下自动启用多向可读性描边与投影，不透明 Editorial 卡片保持零重影。"""
+    """纯文字排版标签：高透明度/半透明状态下按背景对比度自动启用可读性描边与投影，高对比纯背景保持零重影。"""
 
     def __init__(self, text: str = "", parent=None):
         super().__init__(text, parent)
@@ -764,21 +914,40 @@ class _ShadowLabel(QLabel):
         self._transparent_bg = False
         self._shadow_strength: float = 0.0
         self._dark_halo: bool = True
+        self._text_color: Optional[QColor] = None
+
+    def set_text_color(self, color: str):
+        self._text_color = QColor(color)
+        self.update()
 
     def set_shadow_enabled(self, enabled: bool):
         self._shadow_enabled = bool(enabled)
-        self._shadow_strength = 0.0
+        self._shadow_strength = 1.0 if enabled else 0.0
         self.update()
 
     def set_transparent_bg(self, val: bool, strength: Optional[float] = None, dark_halo: bool = True):
-        self._transparent_bg = bool(val)
-        self._shadow_strength = 0.0
-        self._shadow_enabled = False
+        s = (1.0 if val else 0.0) if strength is None else max(0.0, min(1.0, float(strength)))
+        self._shadow_strength = s
+        self._shadow_enabled = (s > 0.02)
+        self._transparent_bg = bool(val or s > 0.02)
         self._dark_halo = bool(dark_halo)
         self.update()
 
     def paintEvent(self, event):
-        super().paintEvent(event)
+        if self._shadow_strength <= 0.02 or not self.text():
+            super().paintEvent(event)
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        painter.setFont(self.font())
+        rect = QRectF(self.contentsRect())
+        flags = int(self.alignment()) | (int(Qt.TextFlag.TextWordWrap) if self.wordWrap() else 0)
+        txt = self.text()
+        _draw_halo_text(painter, rect, flags, txt, self._shadow_strength, self._dark_halo)
+        fg = self._text_color if self._text_color is not None else self.palette().color(QPalette.ColorRole.WindowText)
+        painter.setPen(fg)
+        painter.drawText(rect, flags, txt)
 
 
 class _TranscriptRowWidget(QFrame):
@@ -1826,6 +1995,7 @@ class BilingualSubtitleWindow(QWidget):
         self._proximity_timer.timeout.connect(self._check_low_opacity_proximity)
 
         self._auto_fg_is_light: Optional[bool] = None
+        self._auto_halo_strength: float = 0.0
         self._backdrop_timer = QTimer(self)
         self._backdrop_timer.setInterval(280)
         self._backdrop_timer.timeout.connect(self._on_backdrop_poll_tick)
@@ -2063,6 +2233,7 @@ class BilingualSubtitleWindow(QWidget):
         self.hud_cn_label.setWordWrap(True)
         self.hud_cn_label.setTextFormat(Qt.TextFormat.PlainText)
         self.hud_cn_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.hud_cn_label.setContentsMargins(2, 1, 2, 2)
         self.hud_cn_label.setFont(_make_ui_font(10.0, weight=QFont.Weight.Normal))
         self.hud_cn_label.setStyleSheet(
             "color: #A1A1AA; font-size: 13.5px; font-weight: 400; background: transparent; border: none;"
@@ -2528,8 +2699,73 @@ class BilingualSubtitleWindow(QWidget):
             self._backdrop_timer.stop()
             if not self._is_adaptive_contrast_active():
                 self._auto_fg_is_light = None
+                self._auto_halo_strength = 0.0
 
-    def _sample_underlying_bg_luma(self) -> Optional[float]:
+    def _compute_text_sample_local_rect(self) -> QRect:
+        """计算紧贴当前中英文字幕实际排版区域（排除 wide 模式下左右空白翼区）的采样矩形。"""
+        w = max(1, self.width())
+        h = max(1, self.height())
+        top_vis = hasattr(self, "hud_top_widget") and self.hud_top_widget.isVisible()
+        fallback = QRect(
+            int(w * 0.14),
+            int(h * (0.44 if top_vis else 0.18)),
+            max(24, int(w * 0.72)),
+            max(8, int(h * (0.46 if top_vis else 0.70))),
+        )
+        boxes: List[QRect] = []
+        if hasattr(self, "hud_en_widget") and self.hud_en_widget.isVisible() and self.hud_en_widget.height() > 2:
+            en_tl = self.hud_en_widget.mapTo(self, QPoint(0, 0))
+            en_box = QRect(en_tl, self.hud_en_widget.size())
+            items = self.hud_en_widget.get_word_items()
+            if items:
+                x1 = min(it["rect"].left() for it in items)
+                x2 = max(it["rect"].right() for it in items)
+                lx1 = max(en_box.left(), int(en_tl.x() + x1) - 14)
+                lx2 = min(en_box.right(), int(en_tl.x() + x2) + 14)
+                if lx2 > lx1:
+                    en_box = QRect(lx1, en_box.top(), lx2 - lx1, en_box.height())
+            boxes.append(en_box)
+
+        if (
+            hasattr(self, "hud_cn_label")
+            and self.hud_cn_label.isVisible()
+            and self.hud_cn_label.height() > 2
+            and self.hud_cn_label.text().strip()
+        ):
+            cn_tl = self.hud_cn_label.mapTo(self, QPoint(0, 0))
+            cn_box = QRect(cn_tl, self.hud_cn_label.size())
+            fm = QFontMetricsF(self.hud_cn_label.font())
+            br = fm.boundingRect(
+                QRectF(0, 0, max(40.0, float(cn_box.width())), 400.0),
+                int(Qt.TextFlag.TextWordWrap | Qt.AlignmentFlag.AlignCenter),
+                self.hud_cn_label.text(),
+            )
+            span_w = min(cn_box.width(), max(24, int(round(br.width())) + 28))
+            cx = cn_box.center().x()
+            boxes.append(QRect(cx - span_w // 2, cn_box.top(), span_w, cn_box.height()))
+
+        if not boxes:
+            return fallback
+        u = boxes[0]
+        for b in boxes[1:]:
+            u = u.united(b)
+
+        min_w = int(round(w * 0.30))
+        max_x1 = int(round(w * 0.07))
+        max_x2 = int(round(w * 0.93))
+        x1 = max(max_x1, u.left())
+        x2 = min(max_x2, u.right())
+        if x2 - x1 < min_w:
+            cx = max(max_x1 + min_w // 2, min(max_x2 - min_w // 2, (x1 + x2) // 2))
+            x1 = max(max_x1, cx - min_w // 2)
+            x2 = min(max_x2, x1 + min_w)
+        y1 = max(2, u.top() - 2)
+        y2 = min(h - 2, u.bottom() + 2)
+        if x2 - x1 <= 4 or y2 - y1 <= 2:
+            return fallback
+        return QRect(x1, y1, x2 - x1, y2 - y1)
+
+    def _sample_underlying_bg_rgb(self) -> Optional[Any]:
         if not (self.isVisible() and self._capture_exclusion_applied and sys.platform == "win32"):
             return None
         try:
@@ -2541,34 +2777,54 @@ class BilingualSubtitleWindow(QWidget):
             rh = int(rc.bottom - rc.top)
             if rw <= 40 or rh <= 24:
                 return None
-            sx = int(rc.left + rw * 0.14)
-            sw = max(24, int(rw * 0.72))
-            sy = int(rc.top + rh * (0.48 if self.hud_top_widget.isVisible() else 0.28))
-            sh = max(8, int(rh * 0.36))
-            return sample_screen_region_luma(sx, sy, sw, sh)
+            local_r = self._compute_text_sample_local_rect()
+            sx_scale = rw / max(1, self.width())
+            sy_scale = rh / max(1, self.height())
+            sx = max(int(rc.left), min(int(rc.right) - 8, int(round(rc.left + local_r.x() * sx_scale))))
+            sy = max(int(rc.top), min(int(rc.bottom) - 4, int(round(rc.top + local_r.y() * sy_scale))))
+            sw = max(24, min(int(rc.right) - sx, int(round(local_r.width() * sx_scale))))
+            sh = max(8, min(int(rc.bottom) - sy, int(round(local_r.height() * sy_scale))))
+            return sample_screen_region_rgb(sx, sy, sw, sh)
         except Exception:
             return None
+
+    def _sample_underlying_bg_luma(self) -> Optional[float]:
+        samples = self._sample_underlying_bg_rgb()
+        if samples is None:
+            return None
+        if _np is not None and hasattr(samples, "shape"):
+            if samples.size == 0:
+                return None
+            luma = 0.299 * samples[:, 0] + 0.587 * samples[:, 1] + 0.114 * samples[:, 2]
+            return float(_np.median(luma))
+        lumas = sorted(0.299 * r + 0.587 * g + 0.114 * b for r, g, b in samples)
+        return float(lumas[len(lumas) // 2]) if lumas else None
 
     def _sample_and_apply_backdrop(self, force_repaint: bool = True):
         if not self._is_adaptive_contrast_active():
             return
-        bg_luma = self._sample_underlying_bg_luma()
-        if bg_luma is None:
+        rgb_samples = self._sample_underlying_bg_rgb()
+        if rgb_samples is None:
             return
         alpha = max(0.0, min(1.0, float(self._bg_opacity_pct) / 100.0))
-        hud_luma = 248.0 if self._hud_theme == "light" else 28.0
-        eff_luma = hud_luma * alpha + float(bg_luma) * (1.0 - alpha)
-        cur = self._auto_fg_is_light
-        if cur is None:
-            nxt = (eff_luma < 142.0)
-        elif cur and eff_luma >= 152.0:
-            nxt = False
-        elif (not cur) and eff_luma <= 132.0:
-            nxt = True
-        else:
-            nxt = cur
-        if nxt != self._auto_fg_is_light:
-            self._auto_fg_is_light = nxt
+        hud_rgb = (249.0, 248.0, 246.0) if self._hud_theme == "light" else (28.0, 28.0, 28.0)
+        nxt_fg, nxt_halo = analyze_backdrop_contrast(
+            rgb_samples,
+            hud_rgb,
+            alpha,
+            prev_fg_is_light=self._auto_fg_is_light,
+            prev_halo_strength=self._auto_halo_strength,
+        )
+        halo_changed = (
+            abs(nxt_halo - self._auto_halo_strength) >= 0.04
+            or (nxt_halo > 0.02) != (self._auto_halo_strength > 0.02)
+        )
+        if nxt_fg != self._auto_fg_is_light or halo_changed:
+            self._auto_fg_is_light = nxt_fg
+            self._auto_halo_strength = nxt_halo
+            use_halo = nxt_halo > 0.02
+            self.hud_en_widget.set_shadow_mode(use_halo, strength=nxt_halo, dark_halo=nxt_fg)
+            self.hud_cn_label.set_transparent_bg(use_halo, strength=nxt_halo, dark_halo=nxt_fg)
             self._apply_hud_theme_chrome()
             self._sync_hud_text_palette()
             if force_repaint:
@@ -3128,7 +3384,7 @@ class BilingualSubtitleWindow(QWidget):
         en_col = self._lerp_color(en_dark, en_light, blend).name()
         hover_col = self._lerp_color(QColor("#FAF9F6"), QColor("#111111"), blend).name()
         cn_dark = QColor("#E4E2DC" if low_op else "#D8D6D0")
-        cn_light = QColor("#3A3D45")
+        cn_light = QColor("#23262D" if low_op else "#3A3D45")
         cn_col = self._lerp_color(cn_dark, cn_light, blend).name()
         ul_col = self._lerp_color(QColor("#C89EA3"), QColor(LEXICON_THEME["mauve"]), blend).name()
         self.hud_en_widget.set_palette_colors(en_col, hover_col, "rgba(129, 109, 112, 255)")
@@ -3140,16 +3396,19 @@ class BilingualSubtitleWindow(QWidget):
         if fw == "light":
             cn_f = QFont()
             cn_f.setFamilies(["Microsoft YaHei UI Light", "Segoe UI Light", "Microsoft YaHei UI"])
-            cn_f.setPointSizeF(10.0)
+            cn_f.setPixelSize(cn_px)
             cn_f.setWeight(QFont.Weight.Light)
             cn_css = "font-family: 'Microsoft YaHei UI Light', 'Segoe UI Light', 'Microsoft YaHei UI'; font-weight: 300;"
         elif fw == "bold":
             cn_f = _make_ui_font(10.0, weight=QFont.Weight.Bold)
+            cn_f.setPixelSize(cn_px)
             cn_css = "font-weight: 700;"
         else:
             cn_f = _make_ui_font(10.0, weight=QFont.Weight.Normal)
+            cn_f.setPixelSize(cn_px)
             cn_css = "font-weight: 400;"
         self.hud_cn_label.setFont(cn_f)
+        self.hud_cn_label.set_text_color(cn_col)
         self.hud_cn_label.setStyleSheet(
             f"color: {cn_col}; font-size: {cn_px}px; {cn_css} background: transparent; border: none;"
         )
@@ -3239,10 +3498,18 @@ class BilingualSubtitleWindow(QWidget):
         self.hud_close_btn.set_palette(icon_idle, icon_active, close_hover_bg)
 
     def _update_hud_readability_halo(self):
-        self.hud_en_widget.set_shadow_mode(False, strength=0.0, dark_halo=True)
-        self.hud_cn_label.set_transparent_bg(False, strength=0.0, dark_halo=True)
         self._sync_proximity_watcher()
-        self._sample_and_apply_backdrop(force_repaint=False)
+        if self._is_adaptive_contrast_active():
+            s = float(getattr(self, "_auto_halo_strength", 0.0))
+            use_halo = s > 0.02
+            dark_halo = self._is_dark_hud_foreground()
+            self.hud_en_widget.set_shadow_mode(use_halo, strength=s, dark_halo=dark_halo)
+            self.hud_cn_label.set_transparent_bg(use_halo, strength=s, dark_halo=dark_halo)
+            self._sample_and_apply_backdrop(force_repaint=False)
+        else:
+            self._auto_halo_strength = 0.0
+            self.hud_en_widget.set_shadow_mode(False, strength=0.0, dark_halo=True)
+            self.hud_cn_label.set_transparent_bg(False, strength=0.0, dark_halo=True)
         self._apply_hud_top_reveal()
 
     def _apply_hud_appearance(self, resize_now: bool = True):

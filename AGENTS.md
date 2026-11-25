@@ -335,6 +335,35 @@
    - 翻译超时或离线时，绝对禁止将 `"网络超时，已切换至离线原文"` 等报错占位符写入 `definitions[0]["cn"]`。
    - 长句/未收录词无网时置 `definitions = []`、`translation_status = "offline"`，UI 隐藏 `defs_container` 并在独立的 `self.offline_banner` 展示轻量提示与“重试”按钮；已命中 52k `offline_dict.db` / `OFFLINE_DEFS` 的词汇绝不因例句或在线音标补充失败而弹离线提示；2–3 词短语无整句译文时通过 `offline_partial` 提供逐词离线参考释义。
 
+---
+
+## 24. 🎨 透明字幕 RGB 感知对比度与自适应可读性描边规约
+
+1. **文字实际覆盖区精准 RGB 采样**：
+   - `BilingualSubtitleWindow._sample_underlying_bg_rgb` 必须通过 `_compute_text_sample_local_rect` 紧贴当前可见英文字幕词块与中文字幕行共同覆盖区域进行采样，严禁在宽幅预设下采入左右空白翼区或漏采下方中文行；同步保留 `sample_screen_region_luma` 兼容接口。
+2. **Rec.709 + WCAG 相对亮度 + 色度联合判别与纯黑白零描边保护**：
+   - `analyze_backdrop_contrast` 必须结合有效背景 RGB 的 Rec.709 亮度分位数（`p20` / `p50`）、暗区占比（`L < 100`）、色度 `C` 及滞回阈值，避免“亮墙+深蓝衣物”混合场景或高饱和彩底误切深墨色字体。
+   - 纯黑/深底及纯白/浅灰高对比背景（`cr_worst >= 5.5`）必须保持 `halo_strength = 0.0`（零描边零重影）；仅在最劣局部对比度不足时通过 `_draw_halo_text` 按 `halo_strength` 注入锐利自适应描边。
+3. **`_ShadowLabel` 像素字号与色值一致性铁律**：
+   - 启用自定义 `paintEvent` 绘制描边时，`_sync_hud_text_palette` 必须同步为 `hud_cn_label` 设置 `setPixelSize(cn_px)` 与 `set_text_color(cn_col)`，并保留适当 `contentsMargins` 防止阴影边缘裁切。
+
+---
+
+## 25. 🚀 版本更新、GitHub 同步与开源零隐私泄露铁律
+
+1. **版本更新与文档同步规范**：
+   - 每次功能迭代或问题修复完成并通过验证后，须按语义化版本在 `CHANGELOG.md` 顶部倒序追加更新日志（写明版本号、日期、影响模块与核心改动），并将新增的架构边界或踩坑经验同步沉淀至 `AGENTS.md`。
+   - 同步维护 `README.md` 中的功能说明与项目结构索引；**仅在完成正式构建并上传新版本 GitHub Release 压缩包后**才更新 `README.md` 的 Release 徽章与压缩包下载文件名，严禁指向未发布的下载链接。
+2. **Git 提交身份强制锁定门禁**：
+   - 每次执行 `git commit`、`git tag` 或 `git push` 前，必须校验当前仓库局部配置 `git config --local user.name` 为 `Gek1t`、`user.email` 为 `231847204+Gek1t@users.noreply.github.com`。
+   - 严禁沿用全局真实姓名或个人/机构邮箱提交；一旦发现身份偏差，必须立即中止并修正局部 `git config`。
+3. **开源零隐私泄露与敏感资产前置审计铁律**：
+   - **严禁个人与环境信息入库**：所有 Git 追踪文件（源码、注释、默认标签、`LICENSE`、`README.md`、`CHANGELOG.md`、`AGENTS.md` 及 Commit Message）中**绝对禁止**包含任何真实姓名、个人或学校/公司邮箱、院校或单位名称、所在城市、本机操作系统用户名或用户绝对路径、具体个人电脑设备型号，以及任何 API Key / Token / Cookie / `SESSDATA`。
+   - **严禁个人数据与运行产物入库**：依托 `.gitignore` 严格隔离个人生词库与配置（`*.db`，仅白名单放行只读词库 `desktop/offline_dict.db`）、运行日志（`*.log`、`logs/`）、临时测试/草稿目录（`scratch/`、`.gemini/`）、本地备份（`backup_v*/`）及打包产物（`dist/`、`build/`、`ScreenLex_v*.zip`）；提交前必须确认 `git status --short` 仅含预期开源文件。
+   - **截图与 Release 附件脱敏**：所有纳入 `docs/screenshots/` 的截图必须在隔离临时库/无隐私样本下渲染并检查 PNG 元数据不含本机路径或账号信息；发布新 Release 压缩包前须终止旧进程、以 `pyinstaller ScreenLex.spec --noconfirm` 重新打包并对包内文件执行字节级隐私扫描，确认零残留后再打注释标签并发布。
+   - **推送前强制扫描闭环**：每次 `git push` 前必须对暂存区与全仓库追踪文件执行敏感信息（个人标识、非 noreply 邮箱格式、本机绝对路径、凭据关键字）正则审计，确认 **0 泄露命中** 且提交作者为匿名身份后方可推送至 `origin/main`。
+
+
 
 
 
